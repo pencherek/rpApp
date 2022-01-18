@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<affaire idAffaire="4D6E67F604A8F028C1258665004E4BFA">
+    <data>
+        <titre>Prévenir les expulsions des locataires et des sous-locataires</titre>
+        <id>MOT21/023</id>
+        <auteur>Josiane Balasko</auteur>
+        <date>21.03.2021</date>
+        <nature>Motion</nature>
+        <cosignataires>Jean Dupont, Jeanne Durand</cosignataires>
+        <resume>blabla</resume>
+    </data>
+  <documents>
+    <document idDoc="4D6E67F604A8F028C125858665004E4BFA">
+      <libelle>Prévenir les expulsions des locataires et des sous-locataires</libelle>
+      <lien>initiative.pdf</lien>
+      <nature>Initiative</nature>
+    </document>
+    <document idDoc="8C125858665004E4D6E67F604A8F024BFA">
+      <libelle>Rapport de la commission 123 : Prévenir les expulsions des locataires et des sous-locataires</libelle>
+      <lien>Rapport_commission_123.pdf</lien>
+      <nature>Rapport</nature>
+    </document>
+  </documents>
+</affaire>

@@ -1,0 +1,1080 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+
+<!-- ====================================== REGLES ======================================
+
+1. Les ID de groupe doivent commencer par l'IDOrganisation de l'entité en charge (EXEC, LEG, etc).
+Ils sont suivis d'un underscore puis de l'identifiant de la phase (EXEC.DECISION)
+C'est sur la base du préfixe que le système détermine quelle est l'entité en charge et gère les droits d'accès
+
+2a. Les états qui correspondent à l'envoi d'une affaire en séance doivent commencer par le terme : Seance
+C'est sur cette base que le système vérifie si une séance valide a été sélectionnée avant le changement d'état (beforeModState)
+et effectue l'ajout dans l'OJ de la séance sélectionnée (afterModState)  => Plus d'actualité 
+
+2b. Les états qui correspondent à l'envoi d'une affaire en commission doivent commencer par le terme : AjoutCommission
+C'est sur cette base que le système ajoute une entrée dans la table Commissions (DtaTbl14m) de l'affaire (afterModState)
+ATTENTION :  les attributs models dans les NextStates permettent de s'y retrouver mais ne servent à rien en matière de workflow pour RAP
+C'est uniquement les modèles de l'état de destination qui fait foi ... ça peut provoquer des surprises.
+En effet, si deux modèles différents ont des états en commun, le système peut proposer des boutons nextStates de l'un pour l'autre.
+Si ça se produit, il faut soit ne pas mettre d'états communs, soit mettre un showSQL sur le nextstate (par exemple si on va vers l'état terminé)
+Re-Attention : pour la génération de la table des états (CSTTblStatut et CstTblNextState) comme on ne peut pas exécuter le showSQL, là on se base sur le models du NextState.
+
+-->
+
+
+<states>     <!--VGE-->
+  <application id="Anagram">
+
+    <StateGroups>
+        <StateGroup description="">CREATION</StateGroup>   <!--en création on ne met pas de libellé de phase car il est commun à tous les modèles-->
+        <StateGroup description="">DEPOT</StateGroup>   <!--en création on ne met pas de libellé de phase car il est commun à tous les modèles-->
+        <StateGroup description="">LEG</StateGroup>
+        <StateGroup description="">EXEC</StateGroup>
+        <StateGroup description="">COM</StateGroup>
+        <StateGroupFlow id="CMCA" description="Groupe Flow CMCA">CREATION,LEG,COM,EXEC,LEG</StateGroupFlow>
+        <StateGroupFlow id="CACM" description="Groupe Flow CACM">CREATION,EXEC,LEG,COM,LEG</StateGroupFlow>
+        <StateGroup description="">S.ELAB</StateGroup>
+        <StateGroup description="">S.PREP</StateGroup>
+        <StateGroup description="">S.RUN</StateGroup>
+        <StateGroup description="">S.POST</StateGroup>
+        <StateGroup description="">S.DONE</StateGroup>
+        <StateGroup description="">S.CORR</StateGroup>
+     </StateGroups>
+
+    <State id="Creation"  groupId="CREATION">
+      <Description>Création</Description>
+      <NextStates>
+        <NextState caption="Valider la saisie" models="P,G">Verrouille</NextState>
+        <!--modèles P et G-->
+        <NextState models="A" showSQL="select 'HIDE'">CreationManuelle</NextState>
+        <!--seulement pour modèle A - modstate exécuté dans le afterNewDoc--> 
+        <!--<NextState caption="Elaborer les documents" models="OCACM">EXEC.ElaborationDocuments</NextState>   -->
+       <!-- <NextState caption="Soumettre au secrétariat du DPT pour validation" models="OCACM" showSQL="select case '{#010180#}' when 'ADM1' then 'SHOW' else 'HIDE' END from Dual">EXEC.ValidationSDPT</NextState>-->
+        <NextState caption="Inscrire l'objet" models="OCACM" showSQL="select case when '{#010180#}' in  ('ADM1','EXEC') then 'SHOW' else 'HIDE' END from Dual">EXEC.SeanceCA</NextState>
+        
+<!--        <NextState caption="Soumettre au SCA pour validation" models="OCACM" showSQL="select case '{#010180#}' when 'EXEC' then 'SHOW' else 'HIDE' END  from Dual">EXEC.ValidationSCA</NextState>-->
+        <NextState caption="Demander soutien" models="OCMCA" >LEG.Soutien</NextState> <!--Passage auto à cet état lors de l'envoi de l'email de demande de soutien--> <!-- BUG : le ShowSQL agit sur LEG.Depot-->
+        <NextState caption="Déposer l'objet" models="OCMCA" showSQL="select case when '{#010180#}' in  ('LEG') then 'SHOW' else 'HIDE' END from Dual" >LEG.SeanceAnnonceCM</NextState>
+        <NextState caption="Planification de la séance"  models="S" >Planification</NextState>
+        <NextState caption="Brouillon" models="D">Brouillon</NextState>
+        <NextState caption="Importer les séances" models="J">ValidationSeances</NextState>
+        <!--seulement pour modèle S - déterminé par le filtre Models dans l'état cible-->
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+        <Wizard caption="Abandonner et supprimer" category="wizard" showSQL="select case when '{$data.getCurrentModel$}' in ('D','M','A') then 'HIDE' else 'SHOW' end"  priv="3" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous supprimer ce dossier ? Opération irréversible')) RAP.drop()</Wizard>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x01</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <!--Motion / Postulat / Projet de règlement / Projet de décision-->
+    <!--  Question : s'il y a opposition à la décision et ensuite prise en considération, comment se passe l'attribtion
+  Corollaire : ne pourrait-on pas faire l'attribution après première délibération du CC ?-->
+    <!--Question : faut-il faire des allers-retour entre Séance commission et rapport commission ?-->
+
+    <!--*******************  spécifique Modèle A **********************************-->
+
+    <!-- dans le cas d'une création manuelle, on part de l'état création en modèle A et on passe à l'état CreationManuelle (sans libellé)
+         ceci a pour effet d'exécuter le ScriptAfterSetting:affaireAction qui crée un nouveau dossier du modèle adéquat à l'état Creation
+    -->
+    <State id="CreationManuelle"  groupId="CREATION">
+      <Description>Choix du modèle</Description>
+        <!--On ne met volontairement pas de modèle, le passage se fait en arrière plan //TODO : plutôt masquer le bouton nextstate dans Creation-->
+      <SecuCode>0</SecuCode>
+<!--      <MoreAttributes>
+        <MoreAttribute id="Phase">valeurDeLattribut_1</MoreAttribute>
+        <MoreAttribute id="nomDeLattribut_2">valeurDeLattribut_2</MoreAttribute>
+      </MoreAttributes>-->
+      <NextStates>
+        <NextState caption="Créer objet">CreationManuelle</NextState>
+      </NextStates>      
+      <Wizards>
+        <!--<Wizard caption="Abandonner et supprimer l'objet" category="wizard" secucode="5" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous supprimer cet objet ? Opération irréversible')) RAP.drop()</Wizard>-->
+      </Wizards>      
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting> <!--TODO : vérifier que les 3 champs obligatoires sont saisis (Entité, nature et Goeland si Arbres/permis/adjudications) -->
+      <ScriptAfterSetting>affaireAction</ScriptAfterSetting>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="LEG.Soutien" groupId="CREATION">
+      <Description>Demande de soutien</Description>
+      <Models>OCMCA</Models>
+      <NextStates>
+        <NextState caption="Déposer l'objet">LEG.SeanceAnnonceCM</NextState>
+        <NextState caption="Envoyer la demande de soutien" confirm="Voulez-vous envoyer la demande de soutien ?">LEG.ReponseSoutien</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,affaireAction(CleanupSoutien)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+        <Wizard caption="Abandonner et supprimer l'objet" category="wizard" priv="3" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous supprimer cet objet ? Opération irréversible')) RAP.drop()</Wizard>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x03</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="LEG.ReponseSoutien" groupId="CREATION">
+      <Description>Attente de réponse de soutien</Description>
+      <Models>OCMCA</Models>
+      <NextStates>
+        <NextState caption="Déposer l'objet">LEG.SeanceAnnonceCM</NextState>
+        <NextState caption="Redémarrer la demande de soutien" confirm="Voulez-vous vraiment relancer une demande de soutien ? Toutes les données de soutien présentes seront supprimées.">LEG.Soutien</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState,specificitesVGE(DemandeSoutien)</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+        <Wizard caption="Abandonner et supprimer l'objet" category="wizard" priv="3" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous supprimer cet objet ? Opération irréversible')) RAP.drop()</Wizard>
+      <!--  <Wizard caption="Relever la boîte" category="wizard" priv="6" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:RAP.evaluate({files:'pollMailbox'});</Wizard>-->
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x03</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+<!--
+    <State id="LEG.Depot" groupId="LEG">
+      <Description>Soumis au secrétariat</Description>
+      <Models>OCMCA</Models>
+      <NextStates>
+        <NextState  caption="Valider le dépôt" showSQL="select case when 0{$data.getCurrentPrivilegeLong$} &gt;= 60 then 'SHOW' else 'HIDE' END" confirm="Voulez-vous valider le dépôt et envoyer le document en correction ?">LEG.PreValidationSCM</NextState>
+       <!{1}** <NextState  caption="Envoyer directement au CA" confirm="Voulez-vous vraiment envoyer l'objet au CA ?">EXEC.ValidationSCA</NextState>**{1}>
+        <NextState  caption="Retrait / Rejet"  showSQL="select 'HIDE'" >Archive</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState,affaireAction(DepotAffaire)</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>    <!{1}** BUG : le RW_MASK ne fonctionne pas**{1}>
+      </Session>
+    </State>
+    
+    <State id="LEG.PreValidationSCM" groupId="LEG">
+      <Description>Pré-validation SCM</Description>
+      <Models>OCMCA</Models>
+      <NextStates>
+        <NextState  caption="Mettre à l'OJ pour annonce" confirm="Voulez-vous vraiment mettre l'objet à l'OJ de la séance sélectionnée ?">LEG.SeanceCMAnnonce</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>    <!{1}** BUG : le RW_MASK ne fonctionne pas**{1}>
+      </Session>
+    </State>
+-->
+    
+    <State id="LEG.SeanceAnnonceCM" groupId="DEPOT">
+      <Description>Séance d'annonce</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Renvoi au SCM" showSQL="select 'HIDE'" routage="AN" >LEG.CorrectionSCM</NextState>
+        <NextState  caption="Terminé" showSQL="select 'HIDE'" routage="TE" >Archive</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,specificitesVGE(DepotAffaire)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>    
+    
+
+    <State id="LEG.CorrectionSCM" groupId="LEG">
+      <Description>Correction par SCM</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Envoyer pour révision" confirm="Voulez-vous quittancer la correction et envoyer l'objet pour validation ?">LEG.ValidationSCM</NextState>
+        <!--<NextState  caption="Envoyer directement au CA" confirm="Voulez-vous vraiment envoyer l'objet au CA ?">EXEC.ValidationSCM</NextState>-->
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>    <!-- BUG : le RW_MASK ne fonctionne pas-->
+      </Session>
+    </State>
+
+    
+    <State id="LEG.ValidationSCM" groupId="LEG">
+      <Description>Validation par SCM</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Valider et mettre à l'OJ de la séance CM" confirm="Voulez-vous vraiment mettre l'objet à l'OJ de la séance sélectionnée ?">LEG.SeanceCM</NextState>
+        <!--<NextState  caption="Envoyer directement au CA" confirm="Voulez-vous vraiment envoyer l'objet au CA ?">EXEC.ValidationSCA</NextState>-->
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>    <!-- BUG : le RW_MASK ne fonctionne pas-->
+      </Session>
+    </State>
+    
+    <State id="LEG.SeanceCM" groupId="LEG">
+      <Description>Traitement en séance du CM</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Envoi au CA" showSQL="select 'HIDE'" routage="CA" >EXEC.ValidationSCA</NextState>
+        <NextState  caption="Envoi en commission"  showSQL="select 'HIDE'" routage="CO" >COM.TraitementCommission</NextState>
+        <NextState  caption="Terminé"  showSQL="select 'HIDE'" routage="AC,RE,RT,CL,CE" >Archive</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,affaireAction(AjoutSeance)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="COM.TraitementCommission" groupId="COM">
+      <Description>Traitement en commission</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Transmettre le(s) rapport(s) au SCM"  defaultNextState="true" showSQL="select case count(*) when 0 then 'SHOW' else 'HIDE' end from DtaTbl913m where R0 = '{#0#}' and R913040 &lt; 50">LEG.CorrectionSCM</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0x0F</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>     
+<!--    
+    <State id="LEG.SeanceRapportCommission" groupId="LEG.TRAITEMENT">
+      <Description>Seance CM rapport commission</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Envoi au CA"  models="OCMCA">EXEC.ValidationSCA</NextState>
+        <NextState  caption="Renvoi au CA"  models="OCACM">EXEC.FileDecision</NextState>
+        <NextState  caption="Retrait / Rejet"  models="OCMCA">Archive</NextState>
+        <NextState  caption="Archive"  models="OCACM">Archive</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,affaireAction(AjoutSeance)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0x0F</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>  -->   
+   <!-- 
+    <State id="EXEC.ValidationSDPT" groupId="EXEC">
+      <Description>Validation par secrétariat du département</Description>
+      <Models>OCACM</Models>
+      <NextStates>
+        <NextState  caption="Agender en séance">EXEC.SeanceCA</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+-->
+    
+    <State id="EXEC.ValidationSCA" groupId="EXEC">
+      <Description>Validation SCA</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState caption="Inscrire l'objet">EXEC.SeanceCA</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="EXEC.SeanceCA" groupId="EXEC">
+      <Description>Traitement en séance CA</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Envoyer en délégation" confirm="Voulez-vous effectuer l'ajout l'OJ de la délégation choisie ?" routage="" showSQL="HIDE">COM.TraitementDelegation</NextState>
+        <NextState  caption="Envoyer à un département" routage="" showSQL="HIDE">EXEC.TraitementDepartement</NextState>
+        <NextState  caption="Renvoyer au CM" routage="" showSQL="HIDE">LEG.CorrectionSCM</NextState>        
+        <NextState caption ="Terminé" routage="" showSQL="HIDE">Archive</NextState> 
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,affaireAction(AjoutSeance)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="COM.TraitementDelegation" groupId="EXEC">
+      <Description>Traitement en délégation</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+        <NextState  caption="Soumettre au SCA">EXEC.ValidationSCA</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,affaireAction(AjoutSeance)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="EXEC.TraitementDepartement" groupId="EXEC">
+      <Description>Traitement en département</Description>
+      <Models>OCMCA,OCACM</Models>
+      <NextStates>
+      <!--  <NextState  caption="Soumettre au CA">EXEC.ValidationSDPT</NextState>-->
+        <NextState caption="Inscrire l'objet">EXEC.SeanceCA</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>      
+      <SecuCode>0</SecuCode>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>    
+ <!--   
+    <State id="EXEC.ElaborationDocuments"  groupId="EXEC">
+      <Description>Elaboration des documents</Description>
+      <Models>OCACM</Models>
+      <NextStates>
+        <NextState caption="Soumettre au secrétariat du DPT pour validation" models="OCACM" showSQL="select case '{#010180#}' when 'ADM1' then 'SHOW' else 'HIDE' END from Dual">EXEC.ValidationSDPT</NextState>
+        <NextState caption="Soumettre au SCA pour validation" models="OCACM" showSQL="select case '{#010180#}' when 'EXEC' then 'SHOW' else 'HIDE' END  from Dual">EXEC.ValidationSCA</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x03</RAP_MASK>
+        <RAP_RWMASK>0x02</RAP_RWMASK>
+      </Session>
+    </State>
+-->
+
+    <State id="Archive"  groupId="TERMINE">
+      <Description>Archivé</Description>
+      <Models>OCMCA,OCACM</Models>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="Migration"  groupId="TERMINE">
+      <Description>Migration</Description>
+      <Models>OCMCA,OCACM</Models>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+    
+    <State id="Seance"  groupId="">
+      <Description>Seance</Description>
+      <Models>OSEAN</Models>
+      <NextStates>
+        <NextState  caption="Terminer" showSQL="HIDE">Archive</NextState>
+      </NextStates>      
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting> 
+      <SecuCode>0</SecuCode>
+      <Wizards/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>    
+
+    <!--*******************  spécifique Séance **********************************-->
+    <State id="CreationSeance" groupId="S.ELAB">
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <Description>Choix du modèle</Description>
+      <NextStates>
+        <NextState caption="Créer la séance"  models="S" >Planification</NextState>
+      </NextStates>
+      <Wizards>
+        <Wizard caption="Abandonner et supprimer" category="wizard" priv="3" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous supprimer cette séance ? Opération irréversible')) RAP.drop()</Wizard>
+      </Wizards>      
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <Session>
+        <RAP_MASK>0x01</RAP_MASK>
+        <RAP_RWMASK>0x01</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="Planification" groupId="S.ELAB">
+      <Description>Création</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+      <!--  <NextState caption="Ouvrir la séance"  models="S" confirm="Voulez-vous ouvrir la séance et notifier les participants ?" showSQL="select case '{#040140#}' when 'GPOL' then 'SHOW' else 'HIDE' end">SeancePartiAgendee</NextState>-->
+        <NextState caption="Ouvrir la séance"  models="S" confirm="Voulez-vous ouvrir la séance et notifier les participants ?" x_showSQL="select case '{#040140#}' when 'GPOL' then 'HIDE' else 'SHOW' end">Agendee</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,seanceAction(Planification),seanceAction(OrdreEntites),seanceAction(AjoutParticipants),onDocModification</ScriptAfterSetting>
+      <Wizards>
+        <Wizard caption="Abandonner et supprimer" category="wizard" priv="3" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous supprimer cette séance ? Opération irréversible')) RAP.drop()</Wizard>
+      </Wizards>    
+      <Session>
+        <RAP_MASK>0x03</RAP_MASK>
+        <RAP_RWMASK>0x02</RAP_RWMASK>
+      </Session>
+    </State>
+    
+    <State id="Agendee" groupId="S.ELAB">
+      <Description>Ouverte</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState caption="Verrouiller la séance" showSQL="select case when '{#040140#}' in  ('EXEC','LEG') then 'SHOW' else 'HIDE' end" models="S" dotText="CA / CM" >ElaborationOJ</NextState>
+        <NextState caption="Archiver la séance" showSQL="select case when '{#040140#}' in  ('ADLG','GPOL') then 'SHOW' else 'HIDE' end" models="S" dotText="Bureau CM / Caucus" >SeanceArchivee</NextState>
+        <NextState caption="Validation de l'OJ" showSQL="select case when '{#040140#}' in  ('COMP','COMT') then 'SHOW' else 'HIDE' end" models="S" dotText="Commission">ValidationOJ</NextState>
+        
+      </NextStates>
+      <ScriptBeforeSetting>seanceAction(coherencePlanif),seanceAction(GenererNumero),seanceAction(genererTitre),seanceAction(ValiderNumero),checkRequired,seanceAction(DupliquerParticipants),beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,seanceAction(StructureOJ),seanceAction(ModeEdition;M)</ScriptAfterSetting>
+      <Wizards>
+<!--
+        <Wizard caption="Ajouter un point à l'OJ" category="wizard" models="S" pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;P'});</Wizard>
+        <Wizard caption="Ajouter un commentaire à l'OJ" category="wizard" models="S" pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;C'});</Wizard>
+        <Wizard caption="Renuméroter l'ordre" title="Renumérote la colonne ordre" category="wizard" pageid="2"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:if (confirm('Voulez-vous renuméroter la colonne ordre ?')) RAP.evaluate({files:'seanceAction',params:'RenumeroterPosition'});</Wizard>
+        <Wizard caption="Réordonner les points" title="Réordonne et numérote les points de l'OJ selon l'ordre des rubriques puis date de référence." category="wizard" pageid="2"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:if (confirm('Voulez-vous réordonner les points de l\'OJ ? \nLe numéro actuel des points sera perdu.')) RAP.evaluate({files:'seanceAction',params:'ReordonnerOJ'});</Wizard>
+       <!{1}** <Wizard caption="Générer l'OJ en Word et PDF" category="wizard" models="S" secucode="1" class="btn btn-warning " icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'GenererOJPV;OJ'})</Wizard>**{1}>
+        <Wizard caption="Ajouter tous les objets en commission" category="wizard" models="S"  pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-list-alt" showSQL="select case left('{#040140#}',3) when 'COM' then 'SHOW' else 'HIDE' END">javascript:if (confirm('Voulez-vous ajouter à l\'OJ tous les objets attribués à la commission ?')) RAP.evaluate({files:'seanceAction',params:'AjoutOJCommission'})</Wizard>
+-->
+        <Wizard caption="MAJ structure de l'OJ" title="Reprend la structure selon le choix de gestion" category="wizard" pageid="34"  models="S" priv="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:RAP.evaluate({files:'seanceAction',params:'StructureOJ'});</Wizard>
+        <Wizard id="genPDF" caption="Visualiser l'OJ en PDF" position="top" category="wizard" models="S" pageid="26" priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser l'OJ en Word" position="top"  category="wizard" models="S" pageid="26" priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;DOC;0;L'})</Wizard> 
+         
+      </Wizards>         
+      <Session>
+        <RAP_MASK>0x07</RAP_MASK>
+        <RAP_RWMASK>0x04</RAP_RWMASK>
+      </Session>
+    </State>
+
+<!--    <State id="SeancePartiAgendee" groupId="S.ELAB">
+      <Description>Agendée</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState caption="Débuter la séance"  models="S" >SeanceGroupe</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>seanceAction(coherencePlanif),seanceAction(GenererNumero),seanceAction(ValiderNumero),checkRequired,seanceAction(DupliquerParticipants),beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+   
+      <Session>
+        <RAP_MASK>0x4F</RAP_MASK>
+        <RAP_RWMASK>0x04</RAP_RWMASK>
+      </Session>
+    </State>-->
+    
+    <State id="ElaborationOJ"  groupId="S.ELAB">
+      <Description>Séance verrouillée</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState caption="Envoyer l'OJ en validation" confirm="Voulez-vous vraiment envoyer l'OJ pour validation ?" models="S">ValidationOJ</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,seanceAction(StructureOJ)</ScriptAfterSetting>
+      <Wizards>
+    <!--    <Wizard caption="Ajouter un point à l'OJ" category="wizard" models="S" pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;P'});</Wizard>
+        <Wizard caption="Ajouter un commentaire à l'OJ" category="wizard" models="S" pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;C'});</Wizard>
+        <Wizard caption="Renuméroter l'ordre" title="Renumérote la colonne ordre" category="wizard" pageid="2"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:if (confirm('Voulez-vous renuméroter la colonne ordre ?')) RAP.evaluate({files:'seanceAction',params:'RenumeroterPosition'});</Wizard>
+        <Wizard caption="Réordonner les points" title="Réordonne et numérote les points de l'OJ selon l'ordre des rubriques puis date de référence." category="wizard" pageid="2"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:if (confirm('Voulez-vous réordonner les points de l\'OJ ? \nLe numéro actuel des points sera perdu.')) RAP.evaluate({files:'seanceAction',params:'ReordonnerOJ'});</Wizard>
+        <Wizard caption="MAJ structure de l'OJ" title="Reprend la structure selon le choix de gestion" category="wizard" pageid="34"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:RAP.evaluate({files:'seanceAction',params:'StructureOJ'});</Wizard>
+       <!{1}** <Wizard caption="Générer l'OJ en Word et PDF" category="wizard" models="S" secucode="1" class="btn btn-warning " icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'GenererOJPV;OJ'})</Wizard>**{1}>
+        <Wizard caption="Ajouter tous les objets en commission" category="wizard" models="S"  pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-list-alt" showSQL="select case left('{#040140#}',3) when 'COM' then 'SHOW' else 'HIDE' END">javascript:if (confirm('Voulez-vous ajouter à l\'OJ tous les objets attribués à la commission ?')) RAP.evaluate({files:'seanceAction',params:'AjoutOJCommission'})</Wizard>
+-->
+        <Wizard caption="MAJ structure de l'OJ" title="Reprend la structure selon le choix de gestion" category="wizard" pageid="34"  models="S" priv="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:RAP.evaluate({files:'seanceAction',params:'StructureOJ'});</Wizard>
+        <Wizard id="genPDF" caption="Visualiser l'OJ en PDF" position="top" category="wizard" models="S" pageid="26"  priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser l'OJ en Word" position="top" category="wizard" models="S" pageid="26" priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;DOC;0;L'})</Wizard> 
+         
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x07</RAP_MASK>
+        <RAP_RWMASK>0xF4</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="ValidationOJ" groupId="S.ELAB">
+      <Description>Validation de l'OJ</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState caption="Publier l'ordre du jour" waiter="true" confirm="Voulez-vous vraiment valider et publier l'ordre du jour ?" models="S">AttenteSeance</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,seanceAction(ModeEdition;S)</ScriptAfterSetting>
+      <Wizards>
+<!--        <Wizard caption="Ajouter un point à l'OJ !" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;AP'});</Wizard>
+        <Wizard caption="Ajouter un commentaire à l'OJ" category="wizard" models="S" pageid="2"  secucode="9" class="btn btn-warning " icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;C'});</Wizard>
+        <Wizard caption="Renuméroter l'ordre" title="Renumérote la colonne ordre" category="wizard" pageid="2"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:if (confirm('Voulez-vous renuméroter la colonne ordre ?')) RAP.evaluate({files:'seanceAction',params:'RenumeroterPosition'});</Wizard>
+        <Wizard caption="Réordonner les points" title="Réordonne et numérote les points de l'OJ selon l'ordre des rubriques puis date de référence." category="wizard" pageid="2"  models="S" secucode="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:if (confirm('Voulez-vous réordonner les points de l\'OJ ? \nLe numéro actuel des points sera perdu.')) RAP.evaluate({files:'seanceAction',params:'ReordonnerOJ'});</Wizard>
+-->        
+        <Wizard id="genPDF" caption="Visualiser l'OJ en PDF" position="top" category="wizard" models="S" priv="1"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser l'OJ en Word" position="top" category="wizard" models="S" priv="1"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;DOC;0;L'})</Wizard> 
+                 
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x0F</RAP_MASK>
+        <RAP_RWMASK>0xF4</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="AttenteSeance" groupId="S.PREP">
+      <Description>Préparation de la séance</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState caption="Débuter la séance" confirm = "Voulez-vous débuter la séance ?"  models="S">SeanceEnCours</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>seanceAction(BeforeAttendreSeance),actionDocument(checkDocExists;OJ;FI;1)</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <Wizards>
+        <Wizard caption="MAJ structure de l'OJ" title="Reprend la structure selon le choix de gestion" category="wizard" pageid="34"  models="S" priv="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:RAP.evaluate({files:'seanceAction',params:'StructureOJ'});</Wizard>
+        <Wizard id="genPDF" caption="Visualiser l'OJ en PDF" position="top" category="wizard" models="S" pageid="26"  priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser l'OJ en Word" position="top" category="wizard" models="S" pageid="26" priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;DOC;0;L'})</Wizard>          
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x2F</RAP_MASK>
+        <RAP_RWMASK>0x08</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="SeanceEnCours"  groupId="S.RUN">
+      <Description>Séance/session en cours</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <!--On a un NextState différent selon que l'on ait une séance ou une session) - ben non, ils veulent tout traiter de la même manière -->  
+        <!--<NextState caption="Terminer la séance"   models="S" confirm = "Voulez-vous terminer la séance ?" showSQL="select case when count(*) = 0 then 'SHOW' else 'HIDE' end from DtaTbl042m where r0 = '{#0#}' and coalesce(R042002,'') = ''">SuiviSeance</NextState>
+        <NextState caption="Terminer la séance"   models="S" confirm = "Voulez-vous terminer la séance ?" showSQL="select case when count(*) = 0 then 'SHOW' else 'HIDE' end from DtaTbl042m where r0 = '{#0#}' and coalesce(R042002,'') = ''">SuiviSeance</NextState>-->
+        <NextState caption="Terminer la séance / session"   models="S" confirm = "Voulez-vous terminer la séance/session ?" >SuiviSeance</NextState>
+        <!--<NextState caption="Suspendre la séance" models="S" confirm = "Voulez-vous suspendre la séance ?">SeanceSuspendue</NextState>-->
+      </NextStates>
+       <ScriptBeforeLeaving>beforeModState,actionDocument(checkDocExists;OJ;FI;1)</ScriptBeforeLeaving>
+      <ScriptAfterSetting>afterModState,seanceAction(DebuterSeance),seanceAction(UpdListeDecAffaire)</ScriptAfterSetting>
+     <!-- <SecuCodeOffset>2</SecuCodeOffset>-->
+      <Wizards>
+        <Wizard id="genPDF" caption="Visualiser l'OJ en PDF" position="top" category="wizard" models="S" pageid="26"  priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser l'OJ en Word" position="top" category="wizard" models="S" pageid="26" priv="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_OJ_EXEC.xml2xml;OJ;DOC;0;L'})</Wizard>          
+        <Wizard caption="[MAJ structure de l'OJ]" title="Reprend la structure selon le choix de gestion" category="wizard" pageid="34"  models="S" priv="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:RAP.evaluate({files:'seanceAction',params:'StructureOJ'});</Wizard>
+        <Wizard caption="[UpdListeDecAffaire]" category="wizard" models="S"   priv="9" class="btn btn-warning" icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'UpdListeDecAffaire'});</Wizard>
+      </Wizards>
+
+      <Session>
+        <RAP_MASK>0x7F</RAP_MASK>
+        <RAP_RWMASK>0x18</RAP_RWMASK>
+      </Session>
+    </State>
+
+<!--    <State id="SeanceGroupe"  groupId="S.RUN">   <!{1}**TODO : voir si utile**{1}>
+      <Description>Séance de groupe en cours</Description>
+      <Models>S</Models>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState caption="Terminer la séance"   models="S" confirm = "Voulez-vous terminer la séance ?">SuiviSeanceGroupe</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>seanceAction(DebuterSeance)</ScriptAfterSetting>
+     <!{1}** <SecuCodeOffset>2</SecuCodeOffset>**{1}>
+      <Wizards>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x43</RAP_MASK>
+        <RAP_RWMASK>0xF0</RAP_RWMASK>
+      </Session>
+    </State>-->
+
+    
+<!--    <State id="SeanceSuspendue"  groupId="S.RUN">    <!{1}**TODO : voir si utile**{1}>
+      <Description>Séance suspendue</Description>
+      <NextStates>
+        <NextState caption="Reprendre la séance">SeanceEnCours</NextState>
+      </NextStates>
+      <Models>S</Models>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+    <!{1}**    <Wizard caption="Ajouter un point à l'OJ" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;AP'});</Wizard>
+        <Wizard caption="Générer l'OJ en Word et PDF" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'GenererOJPV;OJ'})</Wizard>      **{1}>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x1F</RAP_MASK>
+        <RAP_RWMASK>0x18</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="SessionSuspendue" groupId="S.RUN">   <!{1}**TODO : voir si utile**{1}>
+      <Description>Session suspendue</Description>
+      <NextStates>
+        <NextState caption="Débuter la séance suivante">SeanceEnCours</NextState>
+      </NextStates>
+      <Models>S</Models>
+      <ScriptBeforeLeaving>beforeModState</ScriptBeforeLeaving>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+<!{1}**      <SecuCodeOffset>2</SecuCodeOffset>**{1}>
+      <Wizards>
+    <!{1}**    <Wizard caption="Ajouter un point à l'OJ" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'AjoutOJ;AP'});</Wizard>
+        <Wizard caption="Générer l'OJ en Word et PDF" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'GenererOJPV;OJ'})</Wizard>**{1}>
+        
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x1F</RAP_MASK>
+        <RAP_RWMASK>0x18</RAP_RWMASK>
+      </Session>
+    </State>    -->
+    
+    <State id="SuiviSeance"  groupId="S.POST">
+      <Description>Suivi de séance</Description>
+      <Models>S</Models>
+      <NextStates>
+        <NextState models="S" caption="Envoyer PV pour validation" showSQL="select case when '{#040140#}' in  ('EXEC','LEG','COMP','COMT') then 'SHOW' else 'HIDE' end"   dotText="CM / CA / Commissions" >ValidationsSeance</NextState>
+        <!--<NextState models="S" caption="Archiver la séance" showSQL="select case when '{#040140#}' in  ('ADLG','GPOL') then 'SHOW' else 'HIDE' end"   dotText="Bureau CM / Caucus" >SeanceArchivee</NextState>-->
+       <!-- <NextState models="S" caption="Exécuter le suivi et archiver la séance">Archivee</NextState>
+        <NextState models="S" caption="Retour à la séance">SeanceEnCours</NextState> -->
+      </NextStates>
+      <ScriptBeforeLeaving>beforeModState</ScriptBeforeLeaving> 
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+  <!--      <Wizard caption="Reporter les heures effectives" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'ReportHeures'})</Wizard>
+        <Wizard caption="Générer le PV en Word et PDF" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'GenererOJPV;PV'})</Wizard>-->
+
+        <Wizard caption="[MAJ structure de l'OJ]" title="Reprend la structure selon le choix de gestion" category="wizard" pageid="34"  models="S" priv="9" class="btn btn-warning " icon="fa fa-fw fa-sort-numeric-asc ">javascript:RAP.evaluate({files:'seanceAction',params:'StructureOJ'});</Wizard>
+        <Wizard caption="[UpdListeDecAffaire]" category="wizard" models="S"   priv="9" class="btn btn-warning" icon="fa fa-fw fa-plus-circle">javascript:RAP.evaluate({files:'seanceAction',params:'UpdListeDecAffaire'});</Wizard>
+
+        <Wizard id="genPDF" caption="Visualiser le PV en PDF" position="top" category="wizard" models="S" priv="1"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_PV_EXEC.xml2xml;PV;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser le PV en Word" position="top" category="wizard" models="S" priv="1"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_PV_EXEC.xml2xml;PV;DOC;0;L'})</Wizard> 
+        <Wizard id="Report" caption="MAJ [sans décision] =&gt; [reporté]" position="top" category="wizard" models="S" priv="6"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:RAP.evaluate({files:'seanceAction',params:'AppliquerDecisionDefaut;S;1'})</Wizard> 
+        <Wizard id="Annonce" caption="Valider les annonces" position="top" category="wizard" models="S" priv="9"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:RAP.evaluate({files:'robotAnnonce',params:'LAAN'})</Wizard> 
+               
+     </Wizards>
+      <Session>
+        <RAP_MASK>0x13F</RAP_MASK>
+        <RAP_RWMASK>0x130</RAP_RWMASK>
+      </Session>   
+    </State>
+
+<!--    <State id="SuiviSeanceGroupe"  groupId="S.POST">   <!{1}**TODO : voir si utile**{1}>
+      <Description>Seance terminée</Description>
+      <Models>S</Models>
+      <NextStates>
+        <NextState models="S" caption="Archiver">SeanceArchivee</NextState>
+      </NextStates>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+        <!{1}** TODO fixme_clean encore utilisé ? **{1}><Wizard caption="Générer les rapports de décision" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'buildWordDocument',params:'oj-direction;%'})</Wizard>
+        <!{1}**c'est le même document que OJ direction mais renommé en RD- **{1}>
+     <!{1}**   <Wizard caption="Envoyer les rapports" category="states" models="S" secucode="9" class="btn btn-info btn-inverse" icon="fa fa-fw fa-envelope">javascript:if (confirm('Voulez-vous envoyer le rapport de décision et mettre à jour les décisions dans les affaires ?')) { doWaiter('Veuillez patienter, génération et envoi des documents en cours ...');  RAP.evaluate({files:'seanceAction',params:'EnvoyerRapDec'})};</Wizard>**{1}>
+        <!{1}** TODO fixme_clean encore utilisé ? **{1}><Wizard caption="Générer le PV" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'buildWordDocument',params:'pv-assemble;%'})</Wizard>
+        <!{1}**c'est le même document que OJ direction mais renommé en RD- **{1}>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x43</RAP_MASK>
+        <RAP_RWMASK>0xF0</RAP_RWMASK>
+      </Session>
+    </State>
+-->
+    <State id="ValidationsSeance"  groupId="S.POST">
+      <!--probablement pas nécessaire-->
+      <Description>En attente validation PV</Description>
+      <Models>S</Models>
+      <NextStates>
+        <NextState models="S" caption="Valider PV et exécuter suivi" showSQL="select case when '{#040140#}' in  ('EXEC','LEG') then 'SHOW' else 'HIDE' end"   dotText="CM / CA">SeanceArchivee</NextState>
+        <NextState models="S" caption="Valider PV et archiver la séance" showSQL="select case when '{#040140#}' in  ('COMP','COMT') then 'SHOW' else 'HIDE' end"   dotText="Commissions">SeanceArchivee</NextState>
+        
+      </NextStates>
+      <!--<ScriptBeforeSetting>beforeModState,seanceAction(GenererOJPV;PV),seanceAction(EnvoyerDocument;PV;BUREAU)</ScriptBeforeSetting>-->
+      <ScriptBeforeSetting>beforeModState,actionDocument(checkDocExists;PV;FI;1)</ScriptBeforeSetting>
+
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <Wizards>
+     <!--   <Wizard caption="Générer le PV en Word et PDF" category="wizard" models="S" secucode="9" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'seanceAction',params:'GenererOJPV;PV'})</Wizard>-->
+ 
+        <Wizard id="genPDF" caption="Visualiser le PV en PDF" position="top" category="wizard" models="S" priv="1"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_PV_EXEC.xml2xml;PV;PDF;0;L'})</Wizard> 
+        <Wizard id="genDOC" caption="Visualiser le PV en Word" position="top" category="wizard" models="S" priv="1"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:doWaiter('Veuillez patienter, génération des documents en cours ...');RAP.evaluate({files:'GenererDocParModele',params:'VGE_PV_EXEC.xml2xml;PV;DOC;0;L'})</Wizard> 
+        <Wizard id="Report" caption="Sans décision en reporté" position="top" category="wizard" models="S" priv="6"  pageid="26" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:RAP.evaluate({files:'AppliquerDecisionDefaut',params:'S'})</Wizard> 
+        
+      </Wizards>
+      <Session>
+        <RAP_MASK>0x13F</RAP_MASK>
+        <RAP_RWMASK>0x130</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <!--Question : peut-on considérer que les publications font partie du suivi de séance ou faut-il une étape spécifique ? -->
+
+    <State id="SeanceArchivee"  groupId="S.DONE">
+      <Description>Archivée</Description>
+      <Models>S</Models>
+      <ScriptBeforeSetting>beforeModState,seanceAction(ExecuterSuivi),seanceAction(CheckSuivi)</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>91</SetWriteLevel>
+      <NextStates>
+        <NextState models="S" caption="Effectuer une correction">SeanceCorrection</NextState>
+      </NextStates>      
+      <Session>
+        <RAP_MASK>0x33F</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State> 
+
+    <State id="SeanceCorrection"  groupId="S.CORR">
+      <Description>Correction</Description>
+      <Models>S</Models>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <NextStates>
+        <NextState models="S" caption="Archiver la séance">SeanceArchivee</NextState>
+      </NextStates>       
+      <Session>
+        <RAP_MASK>0x13F</RAP_MASK>
+        <RAP_RWMASK>0x130</RAP_RWMASK>
+      </Session>
+    </State>
+    
+    <!--*******************  /spécifique Séance **********************************-->
+
+    <!--*******************  spécifique Groupes, Personnes et Modèles **********************************-->
+
+    <State id="Verrouille">
+      <Models>P,G,M</Models>
+      <Description>Actif</Description>
+      <ScriptBeforeSetting>checkRequired,verifUnicite</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,buildPersonList</ScriptAfterSetting>
+      <NextStates>
+        <NextState caption="Editer">Edition</NextState>
+        <NextState caption="Archiver" confirm="Voulez-vous vraiment procéder à l'archivage ?">ArchivePGM</NextState>
+      </NextStates>
+      <SecuCode>0</SecuCode>
+      <SecuCodeOffset>0</SecuCodeOffset>
+      <SetWriteLevel>99</SetWriteLevel>
+      <Wizards>
+        <Wizard caption="Régénérer la liste" category="wizard" models="G,P" priv="6" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-refresh">javascript:if (confirm('Voulez-vous régénérer la liste des groupes et personnes ?')) { doWaiter('Veuillez patienter, traitement en cours ...'); RAP.evaluate({files:'buildPersonList'}) };</Wizard>
+        <Wizard caption="Afficher/Cacher l'historique des membres" category="wizard" models="G" priv="6" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-eye">javascript:RAP.evaluate({files:'groupeAction',params:'ToggleMemberHistory'});</Wizard>
+      </Wizards>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0x00</RAP_RWMASK>
+      </Session>
+    </State>
+
+
+    <State id="Edition">
+      <Models>P,G,M</Models>
+      <Description>Édition</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates>
+        <NextState caption="Valider" waiter="true" confirm="Voulez-vous terminer l'édition et régénérer la liste des groupes ?">Verrouille</NextState>
+        <NextState caption="Archiver" confirm="Voulez-vous vraiment procéder à l'archivage ?" showSQL="select case '{$data.getCurrentModel$}' when 'M' then 'HIDE' else 'SHOW' end from Dual">ArchivePGM</NextState>
+      </NextStates>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+      <Wizards>
+        <Wizard caption="Afficher/Cacher l'historique des membres" category="wizard" models="G" priv="6" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-eye">javascript:RAP.evaluate({files:'groupeAction',params:'ToggleMemberHistory'});</Wizard>
+      </Wizards>
+    </State>
+
+    <State id="ArchivePGM">    <!--s'appelle PGM pour des raisons historiques mais ne s'applique pas à M-->
+      <Models>P,G</Models>
+      <Description>Archivé</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,buildPersonList</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SecuCodeOffset>0</SecuCodeOffset>
+      <SetWriteLevel>99</SetWriteLevel>
+      <Wizards>
+        <Wizard caption="Afficher/Cacher l'historique des membres" category="wizard" models="G" priv="6" class="btn btn-warning btn-inverse" icon="fa fa-fw fa-eye">javascript:RAP.evaluate({files:'groupeAction',params:'ToggleMemberHistory'});</Wizard>
+      </Wizards>
+      <NextStates>
+        <NextState caption="Editer">Edition</NextState>
+      </NextStates>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0x00</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <!--******************* /spécifique Groupes, Personnes et Modèles **********************************-->
+
+    <!--*******************  spécifique Documents **********************************-->
+
+    <!-- Brouillon, Terminé, A viser, Visé, Validé, Repris, Final, Final signé -->
+
+        
+    <State id="Elaboration">
+      <Models>D</Models>
+      <Description>Elaboration</Description>
+      <ScriptBeforeSetting>verifUnicite</ScriptBeforeSetting>
+      <ScriptAfterSetting></ScriptAfterSetting>
+      <NextStates>
+        <NextState caption="Validation" showSQL="HIDE">Final</NextState>
+      </NextStates>
+      <SecuCode>0</SecuCode>
+      <SecuCodeOffset>0</SecuCodeOffset>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0x00</RAP_RWMASK>
+      </Session>
+    </State> 
+    
+<!--    <State id="Brouillon">
+      <Models>D</Models>
+      <Description>Brouillon</Description>
+      <ScriptBeforeSetting>verifUnicite</ScriptBeforeSetting>
+      <ScriptAfterSetting></ScriptAfterSetting>
+      <NextStates>
+        <NextState caption="Terminé">Termine</NextState>
+      </NextStates>
+      <SecuCode>0</SecuCode>
+      <SecuCodeOffset>0</SecuCodeOffset>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0x00</RAP_RWMASK>
+      </Session>
+    </State>
+
+
+
+    
+
+    <State id="Validation">
+      <Models>D</Models>
+      <Description>A viser</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates>
+        <NextState caption="Adoption" showSQL="HIDE">Adoption</NextState>
+      </NextStates>   
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State> 
+
+    <State id="Adoption">
+      <Models>D</Models>
+      <Description>Visé</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates>
+        <NextState caption="Valider">Valide</NextState>
+      </NextStates>   
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State> 
+
+    <State id="Valide">
+      <Models>D</Models>
+      <Description>Validé</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates>
+        <NextState caption="Final" showSQL="HIDE">Final</NextState>
+      </NextStates>    
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State> -->
+    
+    <State id="Final">
+      <Models>D</Models>
+      <Description>Final</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>90</SetWriteLevel> 
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State> 
+
+    <State id="FinalConf">
+      <Models>D</Models>
+      <Description>Final confidentiel</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>90</SetWriteLevel> 
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State> 
+
+    
+    <State id="Confidentiel">
+      <Models>D</Models>
+      <Description>Confidentiel</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates/>
+
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+    
+    <State id="Supprime">
+      <Models>D</Models>
+      <Description>Supprimé</Description>
+      <ScriptBeforeLeaving>beforeModState</ScriptBeforeLeaving>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="Supprime">
+      <Models>D</Models>
+      <Description>Supprimé</Description>
+      <ScriptBeforeLeaving>beforeModState</ScriptBeforeLeaving>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <NextStates/>
+      <Session>
+        <RAP_MASK>0xFF</RAP_MASK>
+        <RAP_RWMASK>0xFF</RAP_RWMASK>
+      </Session>
+    </State>  
+
+    <!--******************* /spécifique Documents **********************************-->
+    
+    <State id="ValidationSeances">
+      <Models>J</Models>
+      <Description>Validation des séances</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState,JetonsPresence(ListeSeances)</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <Wizards>       
+        <Wizard caption="Réimporter les séances"  position="top" category="wizard" models="J" secucode="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous réimporter les séances ?')) RAP.evaluate({files:'JetonsPresence',params:'ListeSeances'})</Wizard>      
+<!--        <Wizard caption="Recalculer les jetons"  position="top" category="wizard" models="J" secucode="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous réimporter les jetons ?')) RAP.evaluate({files:'JetonsPresence',params:'FillTable'})</Wizard>      
+        <Wizard caption="Générer décompte"  position="top" category="wizard" models="J" secucode="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:jsExecuteDocWizard('ACTION:doEvaluate(JetonsPresence;;hreqWizJetons;popup)', 'overlay(50%,50%)', 'Générer décompte:dlgGenJetons', true)</Wizard>      -->
+      </Wizards>     
+      <NextStates>
+        <NextState caption="Importer les données">Traitement</NextState>
+      </NextStates>
+      <Session>
+        <RAP_MASK>0x0F</RAP_MASK>
+        <RAP_RWMASK>0xFE</RAP_RWMASK>
+      </Session>
+    </State>
+    
+    
+    <State id="Traitement">
+      <Models>J</Models>
+      <Description>Traitement</Description>
+      <ScriptBeforeSetting>beforeModState,JetonsPresence(FillTable)</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>0</SetWriteLevel>
+      <Wizards>       
+        <Wizard caption="Réimporter les séances"  position="top" category="wizard" models="J" secucode="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous réimporter les séances ?')) RAP.evaluate({files:'JetonsPresence',params:'ListeSeances'})</Wizard>      
+        <Wizard caption="Recalculer les jetons"  position="top" category="wizard" models="J" secucode="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:if (confirm('Voulez-vous réimporter les jetons ?')) RAP.evaluate({files:'JetonsPresence',params:'FillTable'})</Wizard>      
+        <Wizard caption="Générer décompte"  position="top" category="wizard" models="J" secucode="1" class="btn btn-warning" icon="fa fa-fw fa-list-alt">javascript:jsExecuteDocWizard('ACTION:doEvaluate(JetonsPresence;;hreqWizJetons;popup)', 'overlay(50%,50%)', 'Générer décompte:dlgGenJetons', true)</Wizard>      
+      </Wizards>  
+      <NextStates>
+        <NextState caption="Archiver">ArchiveJ</NextState>
+      </NextStates>
+      <Session> 
+        <RAP_MASK>0x1F</RAP_MASK>
+        <RAP_RWMASK>0xFE</RAP_RWMASK>
+      </Session>
+    </State>
+
+    <State id="ArchiveJ">
+      <Models>J</Models>
+      <Description>Archivé</Description>
+      <ScriptBeforeSetting>beforeModState</ScriptBeforeSetting>
+      <ScriptAfterSetting>afterModState</ScriptAfterSetting>
+      <SecuCode>0</SecuCode>
+      <SetWriteLevel>99</SetWriteLevel>
+      <NextStates>
+
+      </NextStates>
+      <Session>
+        <RAP_MASK>0x2F</RAP_MASK>
+        <RAP_RWMASK>0xFE</RAP_RWMASK>
+      </Session>
+    </State>
+    
+  </application>
+
+</states>
