@@ -14,9 +14,10 @@ class RolePlayController extends Controller
      */
     public function index()
     {
-        $query = RolePlay::query();
-        $rolePlays = $query->oldest('name')->paginate(10);
-        return view('role_play.index', compact('rolePlays'));
+        $user = auth()->user();
+        $rolePlaysMJ = $user->rolePlaysMJ()->oldest('name')->paginate(10);
+        $rolePlaysPlayer = $user->rolePlaysPlayer()->oldest('name')->paginate(10);
+        return view('role_play.index', compact('rolePlaysMJ','rolePlaysPlayer'));
     }
 
     /**

@@ -16,14 +16,14 @@
         <a class="navbar-link">Rps</a>
         <div class="navbar-dropdown">
           <a class="navbar-item" href="{{route('rolePlays.index')}}">Mes parties</a>
-          <a class="navbar-item">Toutes les parties</a>
-          <a class="navbar-item">Créer</a>
+          <hr class="navbar-divider"/>
+          <a class="button is-info" href="{{ route('rolePlays.create') }}">Créer un rp</a>
         </div>
       </div>
       <div class="navbar-item has-dropdown is-hoverable">
-        <a class="navbar-link">Characters</a>
+        <a class="navbar-link" >Characters</a>
         <div class="navbar-dropdown">
-          <a class="navbar-item">Mes characters</a>
+          <a class="navbar-item" href="{{route('characters.index')}}">Mes characters</a>
           <hr class="navbar-divider">
           <a class="navbar-item">Rien</a>
         </div>
