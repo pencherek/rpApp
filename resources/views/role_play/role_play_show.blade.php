@@ -10,11 +10,12 @@
             </div>
         </div>
         @if($rolePlay->user->id == auth()->user()->id)
-        <p>vide</p>
-        $rolePlay->users->where('id',auth()->user()->id)->get(0)->characters()->where('role_play_id',$rolePlay->id)->get()
+            @foreach ($rolePlay->characters as $character)
+                <p>{{$character->name}}</p>
+            @endforeach
         @else
-            @foreach ($rolePlay->users->where('id',auth()->user()->id)->get(0)->characters()->where('role_play_id',$rolePlay->id)->get() as $character)
-                
+            @foreach (auth()->user()->characters->where('role_play_id',$rolePlay->id) as $character)
+                <p>{{$character->name}}</p>
             @endforeach
         @endif
         <a class="button is-primary" href="{{ route('rolePlays.index') }}">Back</a>

@@ -51,7 +51,9 @@ class RolePlayController extends Controller
      */
     public function show(RolePlay $rolePlay)
     {
-        return view('role_play.role_play_show', compact('rolePlay'));
+        if($rolePlay->users()->where('user_id', auth()->user()->getKey())->exists() || $rolePlay->user->id == auth()->user()->getKey()){
+            return view('role_play.role_play_show', compact('rolePlay'));
+        }
     }
 
     /**

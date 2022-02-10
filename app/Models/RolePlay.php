@@ -15,11 +15,11 @@ class RolePlay extends Model
     {
         return $this->hasMany(Character::class);
     }
-
+    //return the GM of the rolePlay
     public function user(){
         return $this->belongsTo(User::class);
     }
-
+    //Return all players in the rolePlay
     public function users(){
         return $this->belongsToMany(User::class);
     }
